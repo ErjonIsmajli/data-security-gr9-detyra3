@@ -210,3 +210,57 @@ def compute_exchange_hash(client_nonce: bytes, server_nonce: bytes,
     )
     return hashlib.sha256(data).digest()
 
+# ─────────────────────────────────────────────
+# Handshake Handler
+# ─────────────────────────────────────────────
+
+def handle_handshake(conn: socket.socket, addr, host_private_key, dh_params):
+    """
+    Perform all SSH handshake phases with a connected client.
+
+    Phases:
+      1. Protocol version exchange
+      2. Algorithm negotiation (KEXINIT)
+      3. DH key exchange (KEX)
+      4. Server authentication (host key + signature)
+      5. Session key derivation
+      6. NEWKEYS confirmation
+    """
+    session_start = time.time()
+    log.info(f"{'='*60}")
+    log.info(f"NEW CONNECTION from {addr[0]}:{addr[1]}")
+    log.info(f"{'='*60}")
+    print("\n" + "="*55)
+    print("  Client connected! Initiating handshake...")
+    print("="*55)
+
+    try:
+        # ── Phase 1: Protocol Version Exchange ──────────────
+        log.info("[Phase 1] >>> Starting: Protocol Version Exchange")
+        print("\n[Phase 1] Protocol version exchange...")
+
+        server_version = {"type": "SSH_VERSION", "version": "SSH-2.0-SimplSSH_1.0"}
+        send_msg(conn, server_version)
+        log.info(f"[Phase 1] --> Sent server version: {server_version['version']}")
+
+        client_version = recv_msg(conn)
+        if client_version.get("type") != "SSH_VERSION":
+            raise ValueError("Expected SSH_VERSION from client")
+        log.info(f"[Phase 1] <-- Received client version: {client_version['version']}")
+        print(f"  ✔ Client version: {client_version['version']}")
+
+        # ── Phase 2: Algorithm Negotiation (KEXINIT) ────────
+        log.info("[Phase 2] >>> Starting: Algorithm Negotiation (KEXINIT)")
+        print("\n[Phase 2] Algorithm negotiation...")
+
+        server_kexinit = {"type": "KEXINIT", "algorithms": SUPPORTED_ALGOS}
+        send_msg(conn, server_kexinit)
+        log.info(f"[Phase 2] --> Sent server algorithm proposals: {SUPPORTED_ALGOS}")
+
+        client_kexinit = recv_msg(conn)
+        if client_kexinit.get("type") != "KEXINIT":
+            raise ValueError("Expected KEXINIT from client")
+        client_algos = client_kexinit["algorithms"]
+        log.info(f"[Phase 2] <-- Received client algorithm proposals: {client_algos}")
+
+       
