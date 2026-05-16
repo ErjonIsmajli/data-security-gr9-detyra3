@@ -262,5 +262,35 @@ def handle_handshake(conn: socket.socket, addr, host_private_key, dh_params):
             raise ValueError("Expected KEXINIT from client")
         client_algos = client_kexinit["algorithms"]
         log.info(f"[Phase 2] <-- Received client algorithm proposals: {client_algos}")
+         # Intersect to find agreed algorithms
+        agreed_kex = list(set(SUPPORTED_ALGOS["kex"]) & set(client_algos["kex"]))[0]
+        agreed_enc = list(set(SUPPORTED_ALGOS["encryption"]) & set(client_algos["encryption"]))[0]
+        agreed_mac = list(set(SUPPORTED_ALGOS["mac"]) & set(client_algos["mac"]))[0]
+        log.info(f"[Phase 2] ✔ Agreed algorithms — kex: {agreed_kex} | cipher: {agreed_enc} | mac: {agreed_mac}")
+        print(f"  ✔ Agreed kex      : {agreed_kex}")
+        print(f"  ✔ Agreed cipher   : {agreed_enc}")
+        print(f"  ✔ Agreed MAC      : {agreed_mac}")
+
+        # ── Phase 3: DH Key Exchange ────────────────────────
+        log.info("[Phase 3] >>> Starting: Diffie-Hellman Key Exchange")
+        print("\n[Phase 3] Diffie-Hellman key exchange...")
+
+        p, g = dh_params
+        server_private, server_pub_int = dh_generate_server_keypair(p, g)
+        log.info(f"[Phase 3] Server DH public key (first 32 hex chars): {hex(server_pub_int)[:32]}...")
+
+        # Receive client's DH public value and nonce
+        kex_init = recv_msg(conn)
+        if kex_init.get("type") != "KEX_INIT":
+            raise ValueError("Expected KEX_INIT from client")
+        client_pub_int = int(kex_init["dh_public"])
+        client_nonce = bytes.fromhex(kex_init["nonce"])
+        log.info(f"[Phase 3] <-- Received client DH public key (first 32 hex chars): {hex(client_pub_int)[:32]}...")
+        log.info(f"[Phase 3] <-- Received client nonce: {client_nonce.hex()[:16]}... ({len(client_nonce)} bytes)")
+        log.info(f"[Phase 3] Client DH key bit-length: {client_pub_int.bit_length()} bits")
+        print("  ✔ Received client DH public key and nonce")
+
+      
+
 
        
