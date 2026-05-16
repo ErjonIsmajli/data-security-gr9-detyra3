@@ -172,3 +172,154 @@ def compute_exchange_hash(client_nonce: bytes, server_nonce: bytes,
         shared_secret
     )
     return hashlib.sha256(data).digest()
+
+def run_handshake(conn: socket.socket) -> bool:
+   
+    print("\n" + "="*55)
+    print("   Welcome to Simplified SSH Client")
+    print("="*55)
+    print("\n  Attempting to connect to the SSH server...")
+    print("  Starting handshake protocol...\n")
+    log.info("Handshake started.")
+
+    try:
+        
+        log.info("[Phase 1] Protocol version exchange")
+        print("[Phase 1] Protocol version exchange...")
+
+        server_version = recv_msg(conn)
+        if server_version.get("type") != "SSH_VERSION":
+            raise ValueError("Expected SSH_VERSION from server")
+        log.info(f"Server version: {server_version['version']}")
+        print(f"  ✔ Server version: {server_version['version']}")
+
+        client_version = {"type": "SSH_VERSION", "version": "SSH-2.0-SimplSSH_Client_1.0"}
+        send_msg(conn, client_version)
+
+        
+        log.info("[Phase 2] Algorithm negotiation (KEXINIT)")
+        print("\n[Phase 2] Algorithm negotiation...")
+
+        server_kexinit = recv_msg(conn)
+        if server_kexinit.get("type") != "KEXINIT":
+            raise ValueError("Expected KEXINIT from server")
+
+        send_msg(conn, {"type": "KEXINIT", "algorithms": SUPPORTED_ALGOS})
+
+        
+        server_algos = server_kexinit["algorithms"]
+        agreed_kex = list(set(SUPPORTED_ALGOS["kex"]) & set(server_algos["kex"]))[0]
+        agreed_enc = list(set(SUPPORTED_ALGOS["encryption"]) & set(server_algos["encryption"]))[0]
+        agreed_mac = list(set(SUPPORTED_ALGOS["mac"]) & set(server_algos["mac"]))[0]
+        log.info(f"Agreed: kex={agreed_kex}, enc={agreed_enc}, mac={agreed_mac}")
+        print(f"   Agreed kex      : {agreed_kex}")
+        print(f"   Agreed cipher   : {agreed_enc}")
+        print(f"   Agreed MAC      : {agreed_mac}")
+
+       
+        log.info("[Phase 3] Diffie-Hellman key exchange")
+        print("\n[Phase 3] Diffie-Hellman key exchange...")
+
+        p, g = get_dh_group14_params()
+        client_private, client_pub_int = dh_generate_client_keypair(p, g)
+        client_nonce = os.urandom(32)
+
+        send_msg(conn, {
+            "type": "KEX_INIT",
+            "dh_public": str(client_pub_int),
+            "nonce": client_nonce.hex()
+        })
+        print("   Sent client DH public key and nonce to server")
+
+        kex_reply = recv_msg(conn)
+        if kex_reply.get("type") != "KEX_REPLY":
+            raise ValueError("Expected KEX_REPLY from server")
+
+        server_pub_int = int(kex_reply["dh_public"])
+        server_nonce = bytes.fromhex(kex_reply["nonce"])
+        host_pub_key_pem = kex_reply["host_public_key"]
+        log.info("Received server DH public key, nonce, and host public key.")
+        print("   Received server DH public key and host key")
+
+       
+        log.info("[Phase 4] Server authentication")
+        print("\n[Phase 4] Server authentication (verifying signature)...")
+
+        shared_secret = dh_compute_shared_secret(client_private, server_pub_int, p, g)
+
+        
+        sig_msg = recv_msg(conn)
+        if sig_msg.get("type") != "HOST_SIGNATURE":
+            raise ValueError("Expected HOST_SIGNATURE from server")
+
+        
+        exchange_hash = compute_exchange_hash(
+            client_nonce, server_nonce,
+            client_pub_int, server_pub_int,
+            shared_secret
+        )
+        if not verify_server_signature(host_pub_key_pem, sig_msg["signature"], exchange_hash):
+            raise ValueError("Server identity could NOT be verified! Possible MITM attack!")
+
+        print("   Server identity verified via digital signature")
+        print("   No man-in-the-middle attack detected")
+
+        
+        log.info("[Phase 5] Deriving session keys")
+        print("\n[Phase 5] Deriving session keys...")
+
+        session_keys = derive_session_keys(shared_secret, client_nonce, server_nonce)
+        log.info("Session keys derived.")
+        print("   Session keys derived (AES-256 + HMAC-SHA256)")
+
+        
+        log.info("[Phase 6] NEWKEYS exchange")
+        print("\n[Phase 6] NEWKEYS confirmation...")
+
+        send_msg(conn, {"type": "NEWKEYS"})
+        print("   Sent NEWKEYS to server")
+
+        server_newkeys = recv_msg(conn)
+        if server_newkeys.get("type") != "NEWKEYS":
+            raise ValueError("Expected NEWKEYS from server")
+        print("   Received NEWKEYS from server")
+
+        # ── Final confirmation ───────────────────────────────
+        final = recv_msg(conn)
+        if final.get("type") == "HANDSHAKE_COMPLETE":
+            print("\n" + "="*55)
+            print("   Server identity verified. Handshake successful.")
+            print("   Secure channel established.")
+            print("     You can now begin your session.")
+            print("="*55 + "\n")
+            log.info("Handshake complete. Secure session established.")
+            return True
+
+    except Exception as e:
+        log.error(f"Handshake error: {e}")
+        print(f"\n   Handshake failed: {e}")
+        return False
+
+
+
+
+
+def main():
+    log.info(f"Connecting to SSH server at {HOST}:{PORT}...")
+    try:
+        conn = socket.create_connection((HOST, PORT), timeout=10)
+        success = run_handshake(conn)
+        conn.close()
+        if not success:
+            print("  Connection terminated due to handshake failure.\n")
+    except ConnectionRefusedError:
+        print(f"\n   Could not connect to server at {HOST}:{PORT}.")
+        print("     Make sure the server is running first.\n")
+        log.error("Connection refused. Is the server running?")
+    except Exception as e:
+        print(f"\n   Unexpected error: {e}\n")
+        log.error(f"Unexpected error: {e}")
+
+
+if __name__ == "__main__":
+    main()
