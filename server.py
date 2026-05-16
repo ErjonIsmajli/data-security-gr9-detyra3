@@ -290,6 +290,143 @@ def handle_handshake(conn: socket.socket, addr, host_private_key, dh_params):
         log.info(f"[Phase 3] Client DH key bit-length: {client_pub_int.bit_length()} bits")
         print("  ✔ Received client DH public key and nonce")
 
+  # Generate server nonce
+        server_nonce = os.urandom(32)
+        log.info(f"[Phase 3] Generated server nonce: {server_nonce.hex()[:16]}... ({len(server_nonce)} bytes)")
+
+        # Send server's DH public value, nonce, and host public key
+        host_pub_bytes = get_public_key_bytes(host_private_key)
+        send_msg(conn, {
+            "type": "KEX_REPLY",
+            "dh_public": str(server_pub_int),
+            "nonce": server_nonce.hex(),
+            "host_public_key": host_pub_bytes.decode()
+        })
+        log.info(f"[Phase 3] --> Sent server DH public key, nonce, and RSA host public key ({len(host_pub_bytes)} bytes)")
+        print("  ✔ Sent server DH public key and host key to client")
+
+        # ── Phase 4: Compute Shared Secret & Sign ───────────
+        log.info("[Phase 4] >>> Starting: Server Authentication (Digital Signature)")
+        print("\n[Phase 4] Server authentication (digital signature)...")
+
+        shared_secret = dh_compute_shared_secret(server_private, client_pub_int, p, g)
+        log.info(f"[Phase 4] Shared secret computed ({len(shared_secret)} bytes): {shared_secret.hex()[:16]}...")
+
+        exchange_hash = compute_exchange_hash(
+            client_nonce, server_nonce,
+            client_pub_int, server_pub_int,
+            shared_secret
+        )
+        log.info(f"[Phase 4] Exchange hash (SHA-256): {exchange_hash.hex()}")
+
+        signature = sign_exchange_hash(host_private_key, exchange_hash)
+        log.info(f"[Phase 4] RSA signature ({len(signature)} bytes): {signature.hex()[:32]}...")
+
+        # Send signature to client for server authentication
+        send_msg(conn, {
+            "type": "HOST_SIGNATURE",
+            "signature": signature.hex(),
+            "exchange_hash": exchange_hash.hex()
+        })
+        log.info(f"[Phase 4] --> Sent HOST_SIGNATURE to client for verification")
+        print("  ✔ Signed exchange hash and sent signature to client")
+
+        # ── Phase 5: Session Key Derivation ─────────────────
+        log.info("[Phase 5] >>> Starting: Session Key Derivation")
+        print("\n[Phase 5] Deriving session keys...")
+
+        session_keys = derive_session_keys(shared_secret, client_nonce, server_nonce)
+        log.info(f"[Phase 5] encryption_key: {session_keys['encryption_key'].hex()[:16]}... (32 bytes, AES-256)")
+        log.info(f"[Phase 5] mac_key:        {session_keys['mac_key'].hex()[:16]}... (32 bytes, HMAC-SHA256)")
+        log.info(f"[Phase 5] iv:             {session_keys['iv'].hex()} (16 bytes, AES-CBC IV)")
+        log.info(f"[Phase 5] ✔ All session keys derived successfully")
+        print("  ✔ Session keys derived (AES-256 + HMAC-SHA256)")
+
+        # ── Phase 6: NEWKEYS – Confirm handshake complete ───
+        log.info("[Phase 6] >>> Starting: NEWKEYS Confirmation")
+        print("\n[Phase 6] NEWKEYS confirmation...")
+
+        client_newkeys = recv_msg(conn)
+        if client_newkeys.get("type") != "NEWKEYS":
+            raise ValueError("Expected NEWKEYS from client")
+        log.info(f"[Phase 6] <-- Received NEWKEYS from client")
+        print("  ✔ Received NEWKEYS from client")
+
+        send_msg(conn, {"type": "NEWKEYS"})
+        log.info(f"[Phase 6] --> Sent NEWKEYS to client")
+        log.info(f"[Phase 6] ✔ Both sides confirmed key switch")
+        print("  ✔ Sent NEWKEYS to client")
+
+        # ── Success ─────────────────────────────────────────
+        elapsed = round(time.time() - session_start, 3)
+        print("\n" + "="*55)
+        print("  ✅ Handshake successful! Secure channel established.")
+        print("="*55 + "\n")
+        log.info(f"{'='*60}")
+        log.info(f"[SUCCESS] Handshake complete in {elapsed}s — secure channel established with {addr[0]}:{addr[1]}")
+        log.info(f"{'='*60}")
+
+        send_msg(conn, {
+            "type": "HANDSHAKE_COMPLETE",
+            "message": "Secure channel established. Session is active."
+        })
+
+    except Exception as e:
+        elapsed = round(time.time() - session_start, 3)
+        log.error(f"{'='*60}")
+        log.error(f"[FAILURE] Handshake failed after {elapsed}s — {type(e).__name__}: {e}")
+        log.error(f"{'='*60}")
+        print(f"\n  ❌ Handshake failed: {e}")
+        try:
+            send_msg(conn, {"type": "ERROR", "message": str(e)})
+        except Exception:
+            pass
+    finally:
+        conn.close()
+        log.info(f"Connection with {addr[0]}:{addr[1]} closed.")
+
+
+# ─────────────────────────────────────────────
+# Main Entry Point
+# ─────────────────────────────────────────────
+
+def main():
+    print("\n" + "="*55)
+    print("   Simplified SSH Server - Starting Up")
+    print("="*55)
+
+    host_private_key = generate_rsa_host_key()
+
+    print("  Pre-generating DH parameters (one-time)...")
+    dh_params = generate_dh_parameters()
+    print("  DH parameters ready.\n")
+
+    server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_sock.bind((HOST, PORT))
+    server_sock.listen(5)
+
+    print(f"\n  Server listening on {HOST}:{PORT}")
+    print("  Awaiting client connections...\n")
+    log.info(f"Server listening on {HOST}:{PORT}")
+
+    while True:
+        try:
+            conn, addr = server_sock.accept()
+            handle_handshake(conn, addr, host_private_key, dh_params)
+        except KeyboardInterrupt:
+            print("\n\n  Server shutting down...")
+            log.info("Server stopped by user.")
+            break
+        except Exception as e:
+            log.error(f"Unexpected error: {e}")
+
+    server_sock.close()
+
+
+if __name__ == "__main__":
+    main()
+
       
 
 
