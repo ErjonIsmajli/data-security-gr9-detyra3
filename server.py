@@ -360,3 +360,42 @@ def handle_handshake(conn, addr, host_private_key, dh_params):
         conn.close()
         log.info(f"Connection with {addr[0]}:{addr[1]} closed.")
 
+# ─────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────
+
+def main():
+    p("\n" + "=" * 55)
+    p("   Simplified SSH Server - Starting Up")
+    p("=" * 55)
+
+    host_private_key = generate_rsa_host_key()
+
+    p("  Pre-generating DH parameters (one-time)...")
+    dh_params = generate_dh_parameters()
+    p("  DH parameters ready.\n")
+
+    server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_sock.bind((HOST, PORT))
+    server_sock.listen(5)
+
+    p(f"\n  Server listening on {HOST}:{PORT}")
+    p("  Awaiting client connections...\n")
+    log.info(f"Server listening on {HOST}:{PORT}")
+
+    while True:
+        try:
+            conn, addr = server_sock.accept()
+            handle_handshake(conn, addr, host_private_key, dh_params)
+        except KeyboardInterrupt:
+            p("\n\n  Server shutting down...")
+            log.info("Server stopped by user.")
+            break
+        except Exception as e:
+            log.error(f"Unexpected error: {e}")
+
+    server_sock.close()
+
+if __name__ == "__main__":
+    main()
